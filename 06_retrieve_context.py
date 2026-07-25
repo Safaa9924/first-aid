@@ -19,24 +19,16 @@ It performs no file I/O of its own — the caller loads the indexes (see
 import os
 import re
 import pickle
-from pathlib import Path
 
 import numpy as np
 import pandas as pd
 from sklearn.metrics.pairwise import cosine_similarity
 
-# ============================================================
-# Path definitions – all files are in the same directory
-# ============================================================
-
-BASE_DIR = Path(__file__).resolve().parent
-
-CHUNKS_CSV_PATH = BASE_DIR / "first_aid_semantic_chunks_final.csv"
-TFIDF_PATH = BASE_DIR / "tfidf_index.pkl"
-BM25_PATH = BASE_DIR / "bm25_index.pkl"
-EMBEDDINGS_PATH = BASE_DIR / "embedding_matrix.npy"
-
-# (تم حذف الأسطر التي كانت تعيد تعريف المسارات باستخدام DATA_DIR)
+DATA_DIR = "data"
+CHUNKS_CSV_PATH = os.path.join(DATA_DIR, "first_aid_semantic_chunks_final.csv")
+TFIDF_PATH = os.path.join(DATA_DIR, "tfidf_index.pkl")
+BM25_PATH = os.path.join(DATA_DIR, "bm25_index.pkl")
+EMBEDDINGS_PATH = os.path.join(DATA_DIR, "embedding_matrix.npy")
 
 EMBEDDING_MODEL_NAME = "all-MiniLM-L6-v2"
 CROSS_ENCODER_NAME = "cross-encoder/ms-marco-MiniLM-L12-v2"
