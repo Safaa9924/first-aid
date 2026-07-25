@@ -1,0 +1,24 @@
+# ---- Core data & pipeline ----
+pandas
+numpy
+scikit-learn
+
+# ---- PDF parsing ----
+docling
+
+# ---- Semantic search ----
+sentence-transformers
+chromadb
+
+# ---- Language handling ----
+langdetect
+deep-translator
+
+# ---- Environment variables ----
+python-dotenv
+
+# ---- LLM calls (OpenRouter) ----
+requests
+
+# ---- Web app ----
+streamlit
