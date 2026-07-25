@@ -24,6 +24,9 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 from sklearn.metrics.pairwise import cosine_similarity
+from sklearn.feature_extraction.text import TfidfVectorizer
+from rank_bm25 import BM25Okapi
+from sentence_transformers import SentenceTransformer
 
 # ============================================================
 # Path definitions – all files are in the same directory
@@ -35,8 +38,6 @@ CHUNKS_CSV_PATH = BASE_DIR / "first_aid_semantic_chunks_final.csv"
 TFIDF_PATH = BASE_DIR / "tfidf_index.pkl"
 BM25_PATH = BASE_DIR / "bm25_index.pkl"
 EMBEDDINGS_PATH = BASE_DIR / "embedding_matrix.npy"
-
-
 
 EMBEDDING_MODEL_NAME = "all-MiniLM-L6-v2"
 CROSS_ENCODER_NAME = "cross-encoder/ms-marco-MiniLM-L12-v2"
@@ -72,30 +73,66 @@ def min_max_normalize(scores):
 
 
 # ==================================================================
-# Index loading (call once, cache in the app layer)
+# Index loading with automatic building if missing
 # ==================================================================
 
 def load_indexes():
-    """Load the chunk table + TF-IDF / BM25 / embedding indexes built by
-    Stage 03/04. Returns a dict ready to feed into the retrieval functions."""
-
-    from sentence_transformers import SentenceTransformer
-
+    """Load the chunk table + TF-IDF / BM25 / embedding indexes.
+    If the index files are missing, build them from the CSV file
+    and save them for future use.
+    """
+    # 1. Load chunks
+    if not CHUNKS_CSV_PATH.exists():
+        raise FileNotFoundError(
+            f"Chunks CSV not found at {CHUNKS_CSV_PATH}. "
+            "Please run 01_documents.py → 03_chunking.py first."
+        )
     chunks_df = pd.read_csv(CHUNKS_CSV_PATH)
 
-    with open(TFIDF_PATH, "rb") as f:
-        tfidf_bundle = pickle.load(f)
+    # 2. Build or load TF-IDF
+    if TFIDF_PATH.exists():
+        with open(TFIDF_PATH, "rb") as f:
+            tfidf_bundle = pickle.load(f)
+        vectorizer = tfidf_bundle["vectorizer"]
+        tfidf_matrix = tfidf_bundle["matrix"]
+    else:
+        print("TF-IDF index not found. Building from chunks...")
+        vectorizer = TfidfVectorizer(token_pattern=r"(?u)\b\w+\b")
+        tfidf_matrix = vectorizer.fit_transform(chunks_df["chunk_text"])
+        with open(TFIDF_PATH, "wb") as f:
+            pickle.dump({"vectorizer": vectorizer, "matrix": tfidf_matrix}, f)
 
-    with open(BM25_PATH, "rb") as f:
-        bm25 = pickle.load(f)
+    # 3. Build or load BM25
+    if BM25_PATH.exists():
+        with open(BM25_PATH, "rb") as f:
+            bm25 = pickle.load(f)
+    else:
+        print("BM25 index not found. Building from chunks...")
+        tokenized_corpus = [simple_tokenize(t) for t in chunks_df["chunk_text"]]
+        bm25 = BM25Okapi(tokenized_corpus)
+        with open(BM25_PATH, "wb") as f:
+            pickle.dump(bm25, f)
 
-    embedding_matrix = np.load(EMBEDDINGS_PATH)
+    # 4. Build or load embeddings
+    if EMBEDDINGS_PATH.exists():
+        embedding_matrix = np.load(EMBEDDINGS_PATH)
+    else:
+        print("Embedding matrix not found. Building from chunks...")
+        model = SentenceTransformer(EMBEDDING_MODEL_NAME)
+        embedding_matrix = model.encode(
+            chunks_df["chunk_text"].tolist(),
+            convert_to_numpy=True,
+            normalize_embeddings=True
+        )
+        np.save(EMBEDDINGS_PATH, embedding_matrix)
+
+    # 5. Load embedding model (always needed for query encoding)
     embedding_model = SentenceTransformer(EMBEDDING_MODEL_NAME)
 
     return {
         "chunks_df": chunks_df,
-        "tfidf_vectorizer": tfidf_bundle["vectorizer"],
-        "tfidf_matrix": tfidf_bundle["matrix"],
+        "tfidf_vectorizer": vectorizer,
+        "tfidf_matrix": tfidf_matrix,
         "bm25": bm25,
         "embedding_model": embedding_model,
         "embedding_matrix": embedding_matrix,
