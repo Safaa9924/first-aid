@@ -27,7 +27,7 @@ from sklearn.metrics.pairwise import cosine_similarity
 DATA_DIR = "data"
 CHUNKS_CSV_PATH = os.path.join(DATA_DIR, "first_aid_semantic_chunks_final.csv")
 TFIDF_PATH = os.path.join(DATA_DIR, "tfidf_index.pkl")
-BM25_PATH = os.path.join(DATA_DIR, "bm25_index.pkl")
+BM25_PATH = os.path.join(DATA_DIR, "bm25_index.py")
 EMBEDDINGS_PATH = os.path.join(DATA_DIR, "embedding_matrix.npy")
 
 EMBEDDING_MODEL_NAME = "all-MiniLM-L6-v2"
