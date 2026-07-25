@@ -24,8 +24,14 @@ import numpy as np
 import pandas as pd
 from sklearn.metrics.pairwise import cosine_similarity
 
-DATA_DIR = "data"
-CHUNKS_CSV_PATH = os.path.join(DATA_DIR, "first_aid_semantic_chunks_final.csv")
+from pathlib import Path
+
+BASE_DIR = Path(__file__).resolve().parent
+
+CHUNKS_CSV_PATH = BASE_DIR / "first_aid_semantic_chunks_final.csv"
+TFIDF_PATH = BASE_DIR / "tfidf_index.pkl"
+BM25_PATH = BASE_DIR / "bm25_index.pkl"
+EMBEDDINGS_PATH = BASE_DIR / "embedding_matrix.npy"
 TFIDF_PATH = os.path.join(DATA_DIR, "tfidf_index.pkl")
 BM25_PATH = os.path.join(DATA_DIR, "bm25_index.pkl")
 EMBEDDINGS_PATH = os.path.join(DATA_DIR, "embedding_matrix.npy")
