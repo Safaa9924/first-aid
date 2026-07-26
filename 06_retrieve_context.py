@@ -1,41 +1,39 @@
 """
-================================================================================
- STAGE 06 · RETRIEVE CONTEXT
- First Aid Reference Guide (St. John Ambulance Canada) — RAG Pipeline
-================================================================================
-Everything needed to turn a raw user question into a grounded context
-package for the LLM:
+Stage 6 — Retrieve Context
+===========================
+Everything needed to turn a raw user question into a ranked, deduped,
+budget-aware context package:
 
-    language detection -> translation -> query expansion ->
-    hybrid retrieval (TF-IDF + BM25 + embeddings) ->
-    cross-encoder reranking -> context packaging
-
-This module is imported by both `streamlit_app.py` and `07_prompting.py`.
-It performs no file I/O of its own — the caller loads the indexes (see
-`load_indexes`) and passes them in.
-================================================================================
+  question -> language detection -> translation to English ->
+  query expansion -> hybrid retrieval (TF-IDF + BM25 + embeddings) ->
+  cross-encoder reranking -> context package
 """
 
-import os
 import re
-import pickle
 
 import numpy as np
 import pandas as pd
 from sklearn.metrics.pairwise import cosine_similarity
+from langdetect import detect
+from deep_translator import GoogleTranslator
+from sentence_transformers import CrossEncoder
 
-DATA_DIR = "data"
-CHUNKS_CSV_PATH = os.path.join(DATA_DIR, "first_aid_semantic_chunks_final.csv")
-TFIDF_PATH = os.path.join(DATA_DIR, "tfidf_index.py")
-BM25_PATH = os.path.join(DATA_DIR, "bm25_index.py")
-EMBEDDINGS_PATH = os.path.join(DATA_DIR, "embedding_matrix.npy")
+# ==================================================
+# Retrieval / Context Configuration
+# ==================================================
 
-EMBEDDING_MODEL_NAME = "all-MiniLM-L6-v2"
-CROSS_ENCODER_NAME = "cross-encoder/ms-marco-MiniLM-L12-v2"
+TOP_K = 40
+TOP_N_RERANK = 10
 
-# ==================================================================
-# Query expansion dictionary (domain-specific first-aid synonyms)
-# ==================================================================
+TFIDF_WEIGHT = 0.1
+BM25_WEIGHT = 0.1
+SEMANTIC_WEIGHT = 0.8
+
+MAX_CONTEXT_CHUNKS = 8
+WORD_BUDGET = 1500
+MAX_CHUNK_WORDS = 180
+
+RERANKER_MODEL_NAME = "cross-encoder/ms-marco-MiniLM-L12-v2"
 
 QUERY_EXPANSION = {
     "burn": ["thermal burn", "chemical burn", "critical burn", "burn dressing", "cool water"],
@@ -45,61 +43,31 @@ QUERY_EXPANSION = {
 }
 
 
-# ==================================================================
-# Small helpers
-# ==================================================================
-
 def simple_tokenize(text):
     return re.findall(r"\b[a-z0-9]+\b", text.lower())
 
 
 def min_max_normalize(scores):
+
     scores = np.asarray(scores, dtype=np.float32)
+
     if scores.size == 0:
         return scores
-    lo, hi = scores.min(), scores.max()
+
+    lo = scores.min()
+    hi = scores.max()
+
     if hi == lo:
         return np.zeros_like(scores)
+
     return (scores - lo) / (hi - lo)
 
 
-# ==================================================================
-# Index loading (call once, cache in the app layer)
-# ==================================================================
-
-def load_indexes():
-    """Load the chunk table + TF-IDF / BM25 / embedding indexes built by
-    Stage 03/04. Returns a dict ready to feed into the retrieval functions."""
-
-    from sentence_transformers import SentenceTransformer
-
-    chunks_df = pd.read_csv(CHUNKS_CSV_PATH)
-
-    with open(TFIDF_PATH, "rb") as f:
-        tfidf_bundle = pickle.load(f)
-
-    with open(BM25_PATH, "rb") as f:
-        bm25 = pickle.load(f)
-
-    embedding_matrix = np.load(EMBEDDINGS_PATH)
-    embedding_model = SentenceTransformer(EMBEDDING_MODEL_NAME)
-
-    return {
-        "chunks_df": chunks_df,
-        "tfidf_vectorizer": tfidf_bundle["vectorizer"],
-        "tfidf_matrix": tfidf_bundle["matrix"],
-        "bm25": bm25,
-        "embedding_model": embedding_model,
-        "embedding_matrix": embedding_matrix,
-    }
-
-
-# ==================================================================
-# Language detection & translation
-# ==================================================================
+# ==================================================
+# Query Processing
+# ==================================================
 
 def detect_language(text):
-    from langdetect import detect
     try:
         return detect(text)
     except Exception:
@@ -107,17 +75,15 @@ def detect_language(text):
 
 
 def translate_to_english(text):
-    from deep_translator import GoogleTranslator
     return GoogleTranslator(source="auto", target="en").translate(text)
 
 
 def translate_to_arabic(text):
-    from deep_translator import GoogleTranslator
     return GoogleTranslator(source="auto", target="ar").translate(text)
 
 
 def expand_query(query):
-    """Expand the (English) retrieval query with domain-specific keywords."""
+    """Expand the translated English retrieval query with domain keywords."""
 
     expanded_query = query
     lower_query = query.lower()
@@ -129,9 +95,28 @@ def expand_query(query):
     return expanded_query
 
 
-# ==================================================================
-# Stage 9 — Retrieval functions
-# ==================================================================
+def process_user_question(user_question):
+    """Detects language, translates to English if needed, and expands the query."""
+
+    language = detect_language(user_question)
+
+    if language == "ar":
+        retrieval_query = translate_to_english(user_question)
+    else:
+        retrieval_query = user_question
+
+    expanded = expand_query(retrieval_query)
+
+    return {
+        "language": language,
+        "retrieval_query": retrieval_query,
+        "expanded_query": expanded,
+    }
+
+
+# ==================================================
+# Retrieval Functions (TF-IDF, BM25, Semantic, Hybrid)
+# ==================================================
 
 def retrieve_top_k_tfidf(query, tfidf_vectorizer, tfidf_matrix, chunks_df, k=40):
 
@@ -163,10 +148,7 @@ def retrieve_top_k_bm25(query, bm25, chunks_df, k=40):
 
 def retrieve_top_k_semantic(query, embedding_model, embedding_matrix, chunks_df, k=40):
 
-    query_embedding = embedding_model.encode(
-        [query], convert_to_numpy=True, normalize_embeddings=True
-    )
-
+    query_embedding = embedding_model.encode([query], convert_to_numpy=True, normalize_embeddings=True)
     scores = cosine_similarity(query_embedding, embedding_matrix).flatten()
 
     ranking = np.argsort(scores)[::-1][:k]
@@ -184,58 +166,55 @@ def retrieve_top_k_hybrid(
     bm25,
     embedding_model, embedding_matrix,
     chunks_df,
-    tfidf_weight=0.1,
-    bm25_weight=0.1,
-    semantic_weight=0.8,
-    k=40,
+    tfidf_weight=TFIDF_WEIGHT,
+    bm25_weight=BM25_WEIGHT,
+    semantic_weight=SEMANTIC_WEIGHT,
+    k=TOP_K,
 ):
 
-    # TF-IDF score
     q_vec = tfidf_vectorizer.transform([query])
     tfidf_scores = min_max_normalize(cosine_similarity(q_vec, tfidf_matrix).flatten())
 
-    # BM25 score
     bm25_scores = min_max_normalize(bm25.get_scores(simple_tokenize(query)))
 
-    # Semantic score
-    query_embedding = embedding_model.encode(
-        [query], convert_to_numpy=True, normalize_embeddings=True
-    )
-    semantic_scores = min_max_normalize(
-        cosine_similarity(query_embedding, embedding_matrix).flatten()
-    )
+    query_embedding = embedding_model.encode([query], convert_to_numpy=True, normalize_embeddings=True)
+    semantic_scores = min_max_normalize(cosine_similarity(query_embedding, embedding_matrix).flatten())
 
-    # Weighted fusion
-    fused_scores = (
+    combined = (
         tfidf_weight * tfidf_scores
         + bm25_weight * bm25_scores
         + semantic_weight * semantic_scores
     )
 
-    ranking = np.argsort(fused_scores)[::-1][:k]
+    ranking = np.argsort(combined)[::-1][:k]
 
     results = chunks_df.iloc[ranking].copy()
-    results["score"] = fused_scores[ranking]
+    results["tfidf_score"] = tfidf_scores[ranking]
+    results["bm25_score"] = bm25_scores[ranking]
+    results["semantic_score"] = semantic_scores[ranking]
+    results["score"] = combined[ranking]
     results["retriever"] = "Hybrid"
 
-    return results[["retriever", "chunk_id", "score", "chunk_text"]].reset_index(drop=True)
+    return results[
+        ["retriever", "chunk_id", "tfidf_score", "bm25_score", "semantic_score", "score", "chunk_text"]
+    ].reset_index(drop=True)
 
 
-# ==================================================================
-# Stage 15 — Cross-Encoder Reranking
-# ==================================================================
+# ==================================================
+# Cross-Encoder Reranking
+# ==================================================
 
-_reranker_cache = {}
-
-
-def get_reranker():
-    from sentence_transformers import CrossEncoder
-    if "reranker" not in _reranker_cache:
-        _reranker_cache["reranker"] = CrossEncoder(CROSS_ENCODER_NAME)
-    return _reranker_cache["reranker"]
+_reranker = None
 
 
-def rerank_candidates(query, candidates_df, top_n=10):
+def get_reranker(model_name=RERANKER_MODEL_NAME):
+    global _reranker
+    if _reranker is None:
+        _reranker = CrossEncoder(model_name)
+    return _reranker
+
+
+def rerank_candidates(query, candidates_df, top_n=TOP_N_RERANK):
 
     reranker = get_reranker()
 
@@ -248,38 +227,28 @@ def rerank_candidates(query, candidates_df, top_n=10):
     df = df.sort_values("rerank_score", ascending=False).reset_index(drop=True)
     df["new_rank"] = range(1, len(df) + 1)
 
-    def movement(old_rank, new_rank):
-        if new_rank < old_rank:
-            return "Improved"
-        elif new_rank > old_rank:
-            return "Dropped"
-        return "Same"
-
-    df["movement"] = df.apply(
-        lambda row: movement(row["original_rank"], row["new_rank"]), axis=1
-    )
-
     return df.head(top_n)
 
 
-# ==================================================================
-# Stage 16 — Context package construction
-# ==================================================================
+# ==================================================
+# Context Construction
+# ==================================================
 
 def build_context_package(
     query,
     reranked_df,
-    max_context_chunks=8,
-    word_budget=1500,
-    max_chunk_words=180,
+    max_context_chunks=MAX_CONTEXT_CHUNKS,
+    word_budget=WORD_BUDGET,
+    max_chunk_words=MAX_CHUNK_WORDS,
 ):
     """
     Build the final context package for the LLM.
 
-    - Removes duplicate chunks
-    - Limits each chunk length
-    - Respects total word budget
-    - Produces clean context (no scores or metadata)
+    - Removes duplicate chunks.
+    - Limits each chunk length.
+    - Respects total word budget.
+    - Produces clean context (no scores or metadata) plus the
+      selected_df used for grounding / citations.
     """
 
     candidates = reranked_df.sort_values("rerank_score", ascending=False).reset_index(drop=True)
@@ -306,12 +275,10 @@ def build_context_package(
             continue
 
         words = text.split()
-
         if len(words) > max_chunk_words:
             text = " ".join(words[:max_chunk_words])
 
         chunk_words = len(text.split())
-
         if used_words + chunk_words > word_budget:
             break
 
@@ -327,7 +294,11 @@ def build_context_package(
 
     selected_df = pd.DataFrame(selected_rows)
 
-    context_text = "\n\n---\n\n".join(selected_df["chunk_text"].tolist()) if not selected_df.empty else ""
+    context_blocks = []
+    for i, row in selected_df.iterrows():
+        context_blocks.append(f"[Source {i + 1}]\n{row['chunk_text']}")
+
+    context_text = ("\n\n" + "=" * 80 + "\n\n").join(context_blocks)
 
     return {
         "query": query,
@@ -338,57 +309,39 @@ def build_context_package(
     }
 
 
-# ==================================================================
-# End-to-end convenience wrapper
-# ==================================================================
+# ==================================================
+# End-to-End Retrieval Pipeline
+# ==================================================
 
-def get_context_for_question(
+def retrieve_context(
     user_question,
-    indexes,
-    tfidf_weight=0.1,
-    bm25_weight=0.1,
-    semantic_weight=0.8,
-    top_k=40,
-    top_n_rerank=10,
-    max_context_chunks=8,
-    word_budget=1500,
-    max_chunk_words=180,
+    tfidf_vectorizer, tfidf_matrix,
+    bm25,
+    embedding_model, embedding_matrix,
+    chunks_df,
 ):
-    """Run the full Stage 06 pipeline for a single user question."""
+    """Runs the full question -> context pipeline used by the app."""
 
-    language = detect_language(user_question)
-
-    retrieval_query = (
-        translate_to_english(user_question) if language == "ar" else user_question
-    )
-
-    expanded_query = expand_query(retrieval_query)
+    query_info = process_user_question(user_question)
 
     hybrid_results = retrieve_top_k_hybrid(
-        query=expanded_query,
-        tfidf_vectorizer=indexes["tfidf_vectorizer"],
-        tfidf_matrix=indexes["tfidf_matrix"],
-        bm25=indexes["bm25"],
-        embedding_model=indexes["embedding_model"],
-        embedding_matrix=indexes["embedding_matrix"],
-        chunks_df=indexes["chunks_df"],
-        tfidf_weight=tfidf_weight,
-        bm25_weight=bm25_weight,
-        semantic_weight=semantic_weight,
-        k=top_k,
+        query=query_info["expanded_query"],
+        tfidf_vectorizer=tfidf_vectorizer,
+        tfidf_matrix=tfidf_matrix,
+        bm25=bm25,
+        embedding_model=embedding_model,
+        embedding_matrix=embedding_matrix,
+        chunks_df=chunks_df,
+        k=TOP_K,
     )
 
-    reranked = rerank_candidates(expanded_query, hybrid_results, top_n=top_n_rerank)
-
-    context = build_context_package(
-        query=expanded_query,
-        reranked_df=reranked,
-        max_context_chunks=max_context_chunks,
-        word_budget=word_budget,
-        max_chunk_words=max_chunk_words,
+    reranked = rerank_candidates(
+        query=query_info["expanded_query"],
+        candidates_df=hybrid_results,
+        top_n=TOP_N_RERANK,
     )
 
-    context["language"] = language
-    context["retrieval_query"] = retrieval_query
+    context = build_context_package(query=query_info["expanded_query"], reranked_df=reranked)
+    context["language"] = query_info["language"]
 
     return context
