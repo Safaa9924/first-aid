@@ -1,24 +1,32 @@
-# ---- Core data & pipeline ----
-pandas
-numpy
-scikit-learn
+# ==================================================
+# Core
+# ==================================================
+streamlit==1.38.0
+pandas==2.2.2
+numpy==1.26.4
+scikit-learn==1.5.1
 
-# ---- PDF parsing ----
-docling
+# ==================================================
+# Retrieval
+# ==================================================
+sentence-transformers==3.0.1
+transformers==4.44.2
+torch==2.3.1
+chromadb==0.5.5
 
-# ---- Semantic search ----
-sentence-transformers
-chromadb
+# ==================================================
+# Language
+# ==================================================
+langdetect==1.0.9
+deep-translator==1.11.4
 
-# ---- Language handling ----
-langdetect
-deep-translator
+# ==================================================
+# Utilities
+# ==================================================
+requests==2.32.3
+python-dotenv==1.0.1
 
-# ---- Environment variables ----
-python-dotenv
-
-# ---- LLM calls (OpenRouter) ----
-requests
-
-# ---- Web app ----
-streamlit
+# ==================================================
+# OpenCV (required on Streamlit Cloud)
+# ==================================================
+opencv-python-headless==4.10.0.84
